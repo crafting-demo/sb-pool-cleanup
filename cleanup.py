@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 
 import json
+import os
 import subprocess
 import sys
 import uuid
 import logging
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 
 logging.basicConfig(
     level=logging.INFO,
@@ -20,6 +22,8 @@ POOL_NAMES = [
 ]
 
 DRY_RUN = "--dry" in sys.argv
+LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cleanup.log")
+EASTERN = ZoneInfo("America/New_York")
 
 
 def run_cs_command(args, capture_output=True):
@@ -94,27 +98,28 @@ def remove_sandbox(name):
 
 
 def process_pool(pool_name):
-    """Check a single pool and clean up instances that exceed retention."""
+    """Check a single pool and clean up instances that exceed retention.
+    Returns a list of instance names that were cleaned up."""
     log.info("Processing pool: %s", pool_name)
+    cleaned = []
 
     pool_data = get_pool_info(pool_name)
     if pool_data is None:
-        return
+        return cleaned
 
     retention_str = pool_data.get("spec", {}).get("retention")
     retention_seconds = parse_retention_seconds(retention_str)
     if retention_seconds is None or retention_seconds <= 0:
         log.info("Pool '%s' has no retention set, skipping", pool_name)
-        return
+        return cleaned
 
     instances = pool_data.get("instances", [])
     if not instances:
         log.info("Pool '%s' has no instances", pool_name)
-        return
+        return cleaned
 
     now = datetime.now(timezone.utc)
     retention_delta = timedelta(seconds=retention_seconds)
-    removed = 0
 
     log.info(
         "Pool '%s': retention=%s, instances=%d",
@@ -145,7 +150,7 @@ def process_pool(pool_name):
 
         if DRY_RUN:
             log.info("  [DRY RUN] Would take and remove '%s'", inst_name)
-            removed += 1
+            cleaned.append(inst_name)
             continue
 
         new_name = take_instance(pool_name, inst_name)
@@ -153,10 +158,32 @@ def process_pool(pool_name):
             continue
 
         if remove_sandbox(new_name):
-            removed += 1
+            cleaned.append(inst_name)
             log.info("  Removed '%s' (was '%s')", new_name, inst_name)
 
-    log.info("Pool '%s': cleaned up %d instance(s)", pool_name, removed)
+    log.info("Pool '%s': cleaned up %d instance(s)", pool_name, len(cleaned))
+    return cleaned
+
+
+def write_log(results):
+    """Append to cleanup.log only if at least one sandbox was cleaned up."""
+    all_entries = []
+    for pool_name, cleaned in results.items():
+        for inst_name in cleaned:
+            all_entries.append(f"  {pool_name}: {inst_name} cleaned up")
+
+    if not all_entries:
+        return
+
+    now_eastern = datetime.now(EASTERN)
+    header = now_eastern.strftime("%A, %B %-d %Y at %-I:%M %p %Z")
+    if DRY_RUN:
+        header += " [DRY RUN]"
+
+    with open(LOG_FILE, "a") as f:
+        f.write(f"\n--- {header} ---\n")
+        for entry in all_entries:
+            f.write(entry + "\n")
 
 
 def main():
@@ -165,12 +192,14 @@ def main():
 
     log.info("Starting pool cleanup for %d pool(s)", len(POOL_NAMES))
 
+    results = {}
     for pool_name in POOL_NAMES:
         try:
-            process_pool(pool_name)
+            results[pool_name] = process_pool(pool_name)
         except Exception:
             log.exception("Unexpected error processing pool '%s'", pool_name)
 
+    write_log(results)
     log.info("Pool cleanup complete")
 
 
