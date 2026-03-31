@@ -1,6 +1,6 @@
 jobs:
   pool-cleanup:
     run:
-      cmd: python3 /home/owner/sb-pool-cleanup/cleanup.py
+      cmd: python3 /home/owner/sb-pool-cleanup/cleanup.py --dry
       dir: /home/owner/sb-pool-cleanup
     schedule: "*/20 * * * *"
