@@ -7,7 +7,6 @@ import sys
 import uuid
 import logging
 from datetime import datetime, timezone, timedelta
-from zoneinfo import ZoneInfo
 
 logging.basicConfig(
     level=logging.INFO,
@@ -23,7 +22,7 @@ POOL_NAMES = [
 
 DRY_RUN = "--dry" in sys.argv
 LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cleanup.log")
-EASTERN = ZoneInfo("America/New_York")
+EASTERN = timezone(timedelta(hours=-4), "EDT")
 
 
 def run_cs_command(args, capture_output=True):
@@ -49,6 +48,26 @@ def run_cs_command(args, capture_output=True):
     except Exception as e:
         log.error("Command error: %s", e)
         return False, str(e)
+
+
+def parse_timestamp(ts):
+    """Parse a protobuf/ISO timestamp with nanoseconds and Z or +00:00 suffix."""
+    ts = ts.replace("Z", "+00:00")
+    # Strip the timezone suffix, parse the datetime portion, then re-apply UTC.
+    # Handles nanosecond precision by truncating to microseconds.
+    if "+" in ts[10:]:
+        dt_part = ts[:ts.rfind("+")]
+    elif "-" in ts[10:]:
+        dt_part = ts[:ts.rfind("-")]
+    else:
+        dt_part = ts
+
+    if "." in dt_part:
+        base, frac = dt_part.split(".")
+        frac = frac[:6].ljust(6, "0")
+        dt_part = base + "." + frac
+
+    return datetime.strptime(dt_part, "%Y-%m-%dT%H:%M:%S.%f").replace(tzinfo=timezone.utc)
 
 
 def parse_retention_seconds(retention_str):
@@ -133,7 +152,7 @@ def process_pool(pool_name):
             log.warning("Instance '%s' has no created_at, skipping", inst_name)
             continue
 
-        created_at = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
+        created_at = parse_timestamp(created_at_str)
         age = now - created_at
 
         if age <= retention_delta:
